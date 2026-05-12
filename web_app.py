@@ -735,7 +735,7 @@ def debug_expert():
     import requests
     from expert_scraper import (
         _fetch_url, _get_article_links, _parse_article, _today_slug, _today_slugs,
-        BEST_BETS_URL, _HEADERS, VSIN_COOKIE, _ARTICLE_SOURCES,
+        BEST_BETS_URL, _HEADERS, VSIN_COOKIE, VSIN_WWW_COOKIE, _ARTICLE_SOURCES,
     )
     from bs4 import BeautifulSoup
 
@@ -743,7 +743,8 @@ def debug_expert():
     lines.append("<h2>Expert Scraper Debug</h2>")
     lines.append(f"<p><b>Today slug:</b> <code>{_today_slug()}</code></p>")
     lines.append(f"<p><b>All date slug variants:</b> {', '.join('<code>' + s + '</code>' for s in _today_slugs())}</p>")
-    lines.append(f"<p><b>VSIN_COOKIE set:</b> {'Yes (' + str(len(VSIN_COOKIE)) + ' chars)' if VSIN_COOKIE else '<span style=color:red>No</span>'}</p>")
+    lines.append(f"<p><b>VSIN_COOKIE (splits):</b> {'Yes (' + str(len(VSIN_COOKIE)) + ' chars)' if VSIN_COOKIE else '<span style=color:red>No — splits will fail</span>'}</p>")
+    lines.append(f"<p><b>VSIN_WWW_COOKIE (articles):</b> {'<span style=color:green>Yes (' + str(len(VSIN_WWW_COOKIE)) + ' chars) — paywalled articles accessible</span>' if VSIN_WWW_COOKIE else '<span style=color:orange>Not set — only public article text available</span>'}</p>")
     lines.append(f"<p><b>Article sources:</b> {len(_ARTICLE_SOURCES)} configured</p>")
 
     # ── Step 1: probe each source page ───────────────────────────────────────

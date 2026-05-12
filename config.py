@@ -10,14 +10,26 @@ Edit the non-secret defaults here freely.
 import os
 
 # ----------------------------------------------------------------
-# VSIN PRO COOKIE  (required — everything depends on this)
-# How to get it:
-#   1. Log into vsin.com in Chrome
-#   2. Open DevTools → Application → Cookies → data.vsin.com
-#   3. Copy all name=value pairs as one string
-#   4. Set as VSIN_COOKIE in Railway environment variables
+# VSIN PRO COOKIES  (required — everything depends on these)
+#
+# VSIN_COOKIE     → data.vsin.com splits API cookie
+#   How to get it:
+#     1. Log into vsin.com in Chrome
+#     2. Open DevTools → Network tab → click any splits page
+#     3. Find the request to data.vsin.com → Request Headers → Cookie
+#     4. Copy the full cookie string
+#
+# VSIN_WWW_COOKIE → www.vsin.com subscriber article cookie
+#   How to get it:
+#     1. Log into www.vsin.com in Chrome
+#     2. Open DevTools → Network tab → click any paywalled article
+#     3. Find the request for that page → Request Headers → Cookie
+#     4. Copy the full cookie string (includes wordpress_logged_in_... etc.)
+#
+#   Set both as separate environment variables in Railway.
 # ----------------------------------------------------------------
-VSIN_COOKIE = os.environ.get("VSIN_COOKIE", "").strip()
+VSIN_COOKIE     = os.environ.get("VSIN_COOKIE",     "").strip()
+VSIN_WWW_COOKIE = os.environ.get("VSIN_WWW_COOKIE", "").strip()
 
 # ----------------------------------------------------------------
 # DISCORD WEBHOOK  (optional but highly recommended)

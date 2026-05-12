@@ -17,7 +17,7 @@ import re
 import requests
 from datetime import date
 from bs4 import BeautifulSoup
-from config import VSIN_COOKIE
+from config import VSIN_COOKIE, VSIN_WWW_COOKIE
 
 _HEADERS = {
     "User-Agent": (
@@ -160,28 +160,37 @@ _ARTICLE_SOURCES = [
 ]
 
 
-def _fetch_url(url: str, require_cookie: bool = False) -> str | None:
+def _fetch_url(url: str, force_www_cookie: bool = False) -> str | None:
     """
-    Fetch a URL, trying without a cookie first for www.vsin.com since
-    most article pages are publicly accessible. The data.vsin.com cookie
-    is specific to the splits API and can cause 403s on other subdomains.
+    Fetch a URL with the appropriate cookie for the subdomain.
 
-    Set require_cookie=True to force cookie use (used for splits only).
+    - www.vsin.com article pages: use VSIN_WWW_COOKIE (subscriber auth)
+      so we get the full paywalled text, not just the teaser.
+    - data.vsin.com splits API: caller handles that separately.
+    - Fallback to no-cookie if neither cookie is set.
+
+    force_www_cookie=True skips the unauthenticated attempt entirely.
     """
-    # Try without cookie first for www.vsin.com article pages
-    try:
-        resp = requests.get(url, headers=_HEADERS, timeout=20)
-        if resp.ok and "login" not in resp.url.lower() and len(resp.text) > 500:
-            return resp.text
-    except requests.exceptions.RequestException:
-        pass
+    is_www = "www.vsin.com" in url or (
+        "vsin.com" in url and "data.vsin.com" not in url
+    )
+    cookie = VSIN_WWW_COOKIE if is_www else VSIN_COOKIE
 
-    # Fallback: try with cookie if we have one
-    if VSIN_COOKIE:
+    # Always try with the subscriber cookie first for article pages
+    if cookie:
         try:
-            headers = {**_HEADERS, "Cookie": VSIN_COOKIE}
+            headers = {**_HEADERS, "Cookie": cookie}
             resp = requests.get(url, headers=headers, timeout=20)
-            if resp.ok:
+            if resp.ok and "login" not in resp.url.lower() and len(resp.text) > 500:
+                return resp.text
+        except requests.exceptions.RequestException:
+            pass
+
+    # Fallback: unauthenticated (works for non-paywalled pages)
+    if not force_www_cookie:
+        try:
+            resp = requests.get(url, headers=_HEADERS, timeout=20)
+            if resp.ok and "login" not in resp.url.lower() and len(resp.text) > 500:
                 return resp.text
         except requests.exceptions.RequestException:
             pass
