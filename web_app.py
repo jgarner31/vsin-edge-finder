@@ -734,47 +734,37 @@ def debug_expert():
     """
     import requests
     from expert_scraper import (
-        _fetch_url, _get_article_links, _parse_article, _today_slug,
-        BEST_BETS_URL, _HEADERS, VSIN_COOKIE,
+        _fetch_url, _get_article_links, _parse_article, _today_slug, _today_slugs,
+        BEST_BETS_URL, _HEADERS, VSIN_COOKIE, _ARTICLE_SOURCES,
     )
     from bs4 import BeautifulSoup
 
     lines = []
     lines.append("<h2>Expert Scraper Debug</h2>")
     lines.append(f"<p><b>Today slug:</b> <code>{_today_slug()}</code></p>")
-    lines.append(f"<p><b>Best Bets URL:</b> <code>{BEST_BETS_URL}</code></p>")
+    lines.append(f"<p><b>All date slug variants:</b> {', '.join('<code>' + s + '</code>' for s in _today_slugs())}</p>")
     lines.append(f"<p><b>VSIN_COOKIE set:</b> {'Yes (' + str(len(VSIN_COOKIE)) + ' chars)' if VSIN_COOKIE else '<span style=color:red>No</span>'}</p>")
+    lines.append(f"<p><b>Article sources:</b> {len(_ARTICLE_SOURCES)} configured</p>")
 
-    # ── Step 1: can we reach the Best Bets Today page? ───────────────────────
-    lines.append("<hr><h3>Step 1: Fetch Best Bets Today index</h3>")
-    html = _fetch_url(BEST_BETS_URL)
-    if not html:
-        lines.append("<p style='color:red'>❌ Could not fetch Best Bets Today page at all.</p>")
-    else:
-        lines.append(f"<p style='color:green'>✅ Page fetched ({len(html):,} chars)</p>")
-
-        # ── Step 2: show all links on the page that contain today's slug ────
-        today_slug = _today_slug()
+    # ── Step 1: probe each source page ───────────────────────────────────────
+    lines.append("<hr><h3>Step 1: Probe each article source</h3>")
+    for src_url, src_sport, src_author in _ARTICLE_SOURCES:
+        html = _fetch_url(src_url)
+        if not html:
+            lines.append(f"<p style='color:red'>❌ <code>{src_url}</code> — could not fetch</p>")
+            continue
         soup = BeautifulSoup(html, "html.parser")
         all_links = [a["href"] for a in soup.find_all("a", href=True)]
-        slug_links = [h for h in all_links if today_slug in h.lower()]
-
-        lines.append(f"<p><b>Total links on page:</b> {len(all_links)}</p>")
-        lines.append(f"<p><b>Links containing '{today_slug}':</b> {len(slug_links)}</p>")
-
-        if slug_links:
+        slug_hits = [h for h in all_links if any(s in h.lower() for s in _today_slugs())]
+        color = "green" if slug_hits else "orange"
+        lines.append(
+            f"<p style='color:{color}'>{'✅' if slug_hits else '⚠️'} "
+            f"<code>{src_url}</code> — {len(all_links)} links, "
+            f"<b>{len(slug_hits)} today-slug hits</b></p>"
+        )
+        if slug_hits:
             lines.append("<ul>")
-            for lnk in slug_links[:30]:
-                lines.append(f"<li><code>{lnk}</code></li>")
-            lines.append("</ul>")
-        else:
-            lines.append(f"<p style='color:orange'>⚠️ No links found with today's slug '<b>{today_slug}</b>'. "
-                         "VSIN may not have published articles yet, or the date format differs.</p>")
-
-            # Show a sample of all links so we can see what slugs ARE present
-            lines.append("<p><b>Sample of all article-like links (first 20):</b></p><ul>")
-            article_links = [h for h in all_links if "vsin.com/" in h and len(h) > 40][:20]
-            for lnk in article_links:
+            for lnk in slug_hits[:10]:
                 lines.append(f"<li><code>{lnk}</code></li>")
             lines.append("</ul>")
 

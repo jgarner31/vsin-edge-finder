@@ -115,11 +115,45 @@ _ARTICLE_SIGNALS = [
 
 
 def _today_slug() -> str:
-    """Return today's date as it typically appears in VSIN URLs."""
+    """Return today's date as it typically appears in VSIN URLs (e.g. 'may-12')."""
     today = date.today()
     months = ["january","february","march","april","may","june",
               "july","august","september","october","november","december"]
     return f"{months[today.month - 1]}-{today.day}"
+
+
+def _today_slugs() -> list[str]:
+    """
+    Return all date slug variants VSIN might use in article URLs today.
+    Examples: 'may-12', 'may-12-2026', '5-12', '05-12'
+    """
+    today = date.today()
+    months = ["january","february","march","april","may","june",
+              "july","august","september","october","november","december"]
+    base = f"{months[today.month - 1]}-{today.day}"
+    return [
+        base,                                          # may-12
+        f"{base}-{today.year}",                        # may-12-2026
+        f"{today.month}-{today.day}",                  # 5-12
+        f"{today.month:02d}-{today.day:02d}",          # 05-12
+        today.strftime("%Y-%m-%d"),                    # 2026-05-12
+    ]
+
+
+# Sources to search for today's expert articles.
+# The Best Bets Today page is JS-rendered so we skip it as primary source
+# and instead scrape author pages and category indexes which are static.
+_ARTICLE_SOURCES = [
+    # (url, default_sport, default_author)
+    ("https://www.vsin.com/author/zach-makinen/",    None,  "Makinen"),
+    ("https://www.vsin.com/author/scott-cohen/",     "NBA", "Cohen"),
+    ("https://www.vsin.com/author/kent-davis/",      "NHL", "Davis"),
+    ("https://www.vsin.com/author/greg-peterson/",   "MLB", "Peterson"),
+    ("https://www.vsin.com/mlb/",                    "MLB", None),
+    ("https://www.vsin.com/nba/",                    "NBA", None),
+    ("https://www.vsin.com/nhl/",                    "NHL", None),
+    ("https://www.vsin.com/best-bets-today/",        None,  None),   # fallback, usually JS
+]
 
 
 def _fetch_url(url: str, require_cookie: bool = False) -> str | None:
@@ -153,36 +187,83 @@ def _fetch_url(url: str, require_cookie: bool = False) -> str | None:
 
 def _get_article_links() -> list[dict]:
     """
-    Fetch the Best Bets Today index and return today's article links
-    with sport/author metadata attached.
+    Search multiple VSIN source pages for today's expert articles.
+
+    Strategy:
+    1. Check author pages + category pages (statically rendered HTML).
+    2. Any link whose URL contains one of today's date slugs AND matches
+       a sport/author pattern is included.
+    3. Deduplicate by URL.
     """
-    html = _fetch_url(BEST_BETS_URL)
-    if not html:
-        print("[EXPERT] Could not fetch Best Bets Today page.")
-        return []
+    today_slugs = _today_slugs()
+    seen_urls: set = set()
+    articles: list[dict] = []
 
-    soup = BeautifulSoup(html, "html.parser")
-    today_slug = _today_slug()
-    articles = []
-    seen_urls = set()
-
-    for a_tag in soup.find_all("a", href=True):
-        href = a_tag["href"]
-        if today_slug not in href.lower():
-            continue
-        if href in seen_urls:
-            continue
-        # Skip prop-only articles
-        if any(x in href.lower() for x in ["player-props", "prop-bets", "tennis", "golf"]):
+    for source_url, default_sport, default_author in _ARTICLE_SOURCES:
+        html = _fetch_url(source_url)
+        if not html:
+            print(f"[EXPERT] Could not fetch source: {source_url}")
             continue
 
-        seen_urls.add(href)
-        sport, author = _classify_article(href)
-        if sport or author:
+        soup = BeautifulSoup(html, "html.parser")
+
+        for a_tag in soup.find_all("a", href=True):
+            href = a_tag["href"].strip()
+
+            # Must be a vsin.com article URL
+            if "vsin.com" not in href and not href.startswith("/"):
+                continue
+            if href.startswith("/"):
+                href = "https://www.vsin.com" + href
+
+            if href in seen_urls:
+                continue
+
+            # Skip non-article and prop-only pages
+            skip_terms = ["player-props", "prop-bets", "tennis", "golf",
+                          "data.vsin.com", "live-odds", "vegas-odds",
+                          "analysis/team", "analysis/referee", "power-ratings",
+                          "projections", "weekly-", "injury-report", "fanduel",
+                          "draftkings", "circa", "parlay-calculator"]
+            if any(x in href.lower() for x in skip_terms):
+                continue
+
+            # Must contain one of today's date slugs
+            href_lower = href.lower()
+            if not any(slug in href_lower for slug in today_slugs):
+                continue
+
+            seen_urls.add(href)
+
+            # Classify: prefer source-level defaults, then URL-based classification
+            sport, author = _classify_article(href)
+            if not sport:
+                sport = default_sport
+            if not author:
+                author = default_author
+
+            # Still need at least a sport or author to be useful
+            if not sport and not author:
+                # Infer from path
+                if "/mlb/" in href_lower:
+                    sport = "MLB"
+                elif "/nba/" in href_lower:
+                    sport = "NBA"
+                elif "/nhl/" in href_lower:
+                    sport = "NHL"
+                else:
+                    continue
+
             title = (a_tag.get_text(" ", strip=True) or "").split("\n")[0][:80]
-            articles.append({"url": href, "sport": sport, "author": author, "title": title})
+            articles.append({
+                "url":    href,
+                "sport":  sport,
+                "author": author,
+                "title":  title,
+            })
+            print(f"[EXPERT] Found article: {author}/{sport} — {href}")
 
-    print(f"[EXPERT] Found {len(articles)} relevant articles for today.")
+    print(f"[EXPERT] Total: {len(articles)} relevant article(s) for today.")
     return articles
 
 
