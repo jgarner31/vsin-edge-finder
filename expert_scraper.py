@@ -99,18 +99,22 @@ _TEAM_TOKENS = {
 # Article URL keywords that signal what sport/author it covers
 _ARTICLE_SIGNALS = [
     # (url_keyword, sport, author)
-    ("makinen",         None,  "Makinen"),
-    ("greg-peterson",   "MLB", "Peterson"),
-    ("top-picks.*mlb",  "MLB", "Appelbaum"),
+    ("makinen",            None,  "Makinen"),
+    ("greg-peterson",      "MLB", "Peterson"),
+    ("top-picks.*mlb",     "MLB", "Appelbaum"),
     ("mlb-betting-splits", "MLB", "Appelbaum"),
-    ("nba.*playoffs",   "NBA", "Cohen"),
-    ("nba.*best-bets",  "NBA", "Cohen"),
-    ("nba.*predictions","NBA", "Cohen"),
-    ("nba.*playoff",    "NBA", "Makinen_NBA"),
-    ("nhl.*predictions","NHL", "Davis"),
-    ("nhl.*best-bets",  "NHL", "Davis"),
-    ("nhl.*picks",      "NHL", "Davis"),
-    ("wnba",            "WNBA","Shoemaker"),
+    ("appelbaum",          "MLB", "Appelbaum"),
+    ("adam-burke",         "MLB", "Burke"),
+    ("adam-burkes",        "MLB", "Burke"),
+    ("nba.*playoffs",      "NBA", "Cohen"),
+    ("nba.*best-bets",     "NBA", "Cohen"),
+    ("nba.*predictions",   "NBA", "Cohen"),
+    ("nba.*playoff",       "NBA", "Makinen_NBA"),
+    ("nhl.*predictions",   "NHL", "Davis"),
+    ("nhl.*best-bets",     "NHL", "Davis"),
+    ("nhl.*picks",         "NHL", "Davis"),
+    ("jonathan-davis",     "NHL", "Davis"),
+    ("wnba",               "WNBA","Shoemaker"),
 ]
 
 
@@ -272,6 +276,16 @@ def _classify_article(url: str) -> tuple[str | None, str | None]:
     url_lower = url.lower()
     for pattern, sport, author in _ARTICLE_SIGNALS:
         if re.search(pattern, url_lower):
+            # If the signal doesn't specify a sport, infer it from the URL path
+            if sport is None:
+                if "/nba/" in url_lower:
+                    sport = "NBA"
+                elif "/mlb/" in url_lower:
+                    sport = "MLB"
+                elif "/nhl/" in url_lower:
+                    sport = "NHL"
+                elif "/wnba/" in url_lower:
+                    sport = "WNBA"
             return sport, author
     # Fallback: infer sport from URL path
     if "/mlb/" in url_lower:
@@ -385,6 +399,59 @@ def _parse_makinen(text: str, sport: str, author: str) -> list[dict]:
     return picks
 
 
+def _parse_appelbaum(text: str, sport: str, author: str) -> list[dict]:
+    """
+    Appelbaum / Burke style: splits-based analysis articles.
+    Looks for explicit pick lines like:
+      "Take: TEAM" / "Lean: TEAM" / "Play: TEAM"
+      "smart money on TEAM" / "sharp money on TEAM"
+      "backing TEAM" / "fade TEAM"
+      Standard "Bet:" lines too
+    """
+    picks = []
+
+    # Explicit direction lines
+    _TAKE_RE = re.compile(
+        r"(?:Take|Lean|Play|Back|Best Bet)\s*:\s*([^\n.]+)",
+        re.IGNORECASE,
+    )
+    _SMART_MONEY_RE = re.compile(
+        r"(?:smart|sharp)\s+money\s+(?:is\s+)?(?:on|backing|leaning\s+(?:toward|to)?)\s+([^\n.,]+)",
+        re.IGNORECASE,
+    )
+    _FADE_RE = re.compile(
+        r"(?:fade|against)\s+(?:the\s+)?([A-Z][a-zA-Z\s]+?)(?:\s+(?:here|today|ML|moneyline|\()|[,.]|$)",
+        re.IGNORECASE,
+    )
+
+    for m in _TAKE_RE.findall(text):
+        teams = _extract_teams_from_text(m, sport)
+        for norm, t_sport in teams:
+            picks.append({"team": norm, "sport": t_sport, "author": author,
+                          "conviction": "play", "is_fade": False, "raw": m.strip()})
+
+    for m in _SMART_MONEY_RE.findall(text):
+        teams = _extract_teams_from_text(m, sport)
+        for norm, t_sport in teams:
+            picks.append({"team": norm, "sport": t_sport, "author": author,
+                          "conviction": "slight", "is_fade": False, "raw": m.strip()})
+
+    for m in _FADE_RE.findall(text):
+        teams = _extract_teams_from_text(m, sport)
+        for norm, t_sport in teams:
+            picks.append({"team": norm, "sport": t_sport, "author": author,
+                          "conviction": "slight", "is_fade": True, "raw": m.strip()})
+
+    # Also catch standard "Bet:" lines
+    for m in _BET_LINE_RE.findall(text):
+        teams = _extract_teams_from_text(m, sport)
+        for norm, t_sport in teams:
+            picks.append({"team": norm, "sport": t_sport, "author": author,
+                          "conviction": "play", "is_fade": False, "raw": m.strip()})
+
+    return picks
+
+
 def _parse_cohen(text: str, sport: str, author: str) -> list[dict]:
     picks = []
 
@@ -475,15 +542,22 @@ def _parse_article(html: str, sport: str | None, author: str | None) -> list[dic
     if len(text) < 200:
         return []
 
-    if author in ("Makinen", "Makinen_NBA", "Peterson", "Appelbaum", "Unknown"):
+    if author in ("Makinen", "Makinen_NBA", "Peterson"):
         return _parse_makinen(text, sport or "MLB", author)
+    elif author in ("Appelbaum", "Burke"):
+        # Splits/analysis style — look for "Take:", "smart money", "Bet:" lines
+        picks = _parse_appelbaum(text, sport or "MLB", author)
+        # Also run Makinen patterns since Appelbaum sometimes uses system language
+        picks += _parse_makinen(text, sport or "MLB", author)
+        return picks
     elif author in ("Cohen",):
         return _parse_cohen(text, sport or "NBA", author)
     elif author in ("Davis",):
         return _parse_davis(text, sport or "NHL", author)
     else:
-        # Generic fallback: try both Makinen and Cohen patterns
+        # Generic fallback: try all patterns
         picks = _parse_makinen(text, sport or "MLB", author or "Unknown")
+        picks += _parse_appelbaum(text, sport or "MLB", author or "Unknown")
         picks += _parse_cohen(text, sport or "MLB", author or "Unknown")
         return picks
 
