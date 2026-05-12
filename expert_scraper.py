@@ -122,18 +122,33 @@ def _today_slug() -> str:
     return f"{months[today.month - 1]}-{today.day}"
 
 
-def _fetch_url(url: str) -> str | None:
-    """Fetch a URL with VSIN auth cookie. Returns HTML or None."""
-    if not VSIN_COOKIE:
-        return None
-    headers = {**_HEADERS, "Cookie": VSIN_COOKIE}
+def _fetch_url(url: str, require_cookie: bool = False) -> str | None:
+    """
+    Fetch a URL, trying without a cookie first for www.vsin.com since
+    most article pages are publicly accessible. The data.vsin.com cookie
+    is specific to the splits API and can cause 403s on other subdomains.
+
+    Set require_cookie=True to force cookie use (used for splits only).
+    """
+    # Try without cookie first for www.vsin.com article pages
     try:
-        resp = requests.get(url, headers=headers, timeout=20)
-        if not resp.ok:
-            return None
-        return resp.text
+        resp = requests.get(url, headers=_HEADERS, timeout=20)
+        if resp.ok and "login" not in resp.url.lower() and len(resp.text) > 500:
+            return resp.text
     except requests.exceptions.RequestException:
-        return None
+        pass
+
+    # Fallback: try with cookie if we have one
+    if VSIN_COOKIE:
+        try:
+            headers = {**_HEADERS, "Cookie": VSIN_COOKIE}
+            resp = requests.get(url, headers=headers, timeout=20)
+            if resp.ok:
+                return resp.text
+        except requests.exceptions.RequestException:
+            pass
+
+    return None
 
 
 def _get_article_links() -> list[dict]:
