@@ -726,6 +726,117 @@ def bets_log_page():
 </html>"""
 
 
+@app.route("/debug/expert")
+def debug_expert():
+    """
+    Diagnostic endpoint — shows exactly what the expert scraper sees.
+    Visit /debug/expert in your browser to troubleshoot article parsing.
+    """
+    import requests
+    from expert_scraper import (
+        _fetch_url, _get_article_links, _parse_article, _today_slug,
+        BEST_BETS_URL, _HEADERS, VSIN_COOKIE,
+    )
+    from bs4 import BeautifulSoup
+
+    lines = []
+    lines.append("<h2>Expert Scraper Debug</h2>")
+    lines.append(f"<p><b>Today slug:</b> <code>{_today_slug()}</code></p>")
+    lines.append(f"<p><b>Best Bets URL:</b> <code>{BEST_BETS_URL}</code></p>")
+    lines.append(f"<p><b>VSIN_COOKIE set:</b> {'Yes (' + str(len(VSIN_COOKIE)) + ' chars)' if VSIN_COOKIE else '<span style=color:red>No</span>'}</p>")
+
+    # ── Step 1: can we reach the Best Bets Today page? ───────────────────────
+    lines.append("<hr><h3>Step 1: Fetch Best Bets Today index</h3>")
+    html = _fetch_url(BEST_BETS_URL)
+    if not html:
+        lines.append("<p style='color:red'>❌ Could not fetch Best Bets Today page at all.</p>")
+    else:
+        lines.append(f"<p style='color:green'>✅ Page fetched ({len(html):,} chars)</p>")
+
+        # ── Step 2: show all links on the page that contain today's slug ────
+        today_slug = _today_slug()
+        soup = BeautifulSoup(html, "html.parser")
+        all_links = [a["href"] for a in soup.find_all("a", href=True)]
+        slug_links = [h for h in all_links if today_slug in h.lower()]
+
+        lines.append(f"<p><b>Total links on page:</b> {len(all_links)}</p>")
+        lines.append(f"<p><b>Links containing '{today_slug}':</b> {len(slug_links)}</p>")
+
+        if slug_links:
+            lines.append("<ul>")
+            for lnk in slug_links[:30]:
+                lines.append(f"<li><code>{lnk}</code></li>")
+            lines.append("</ul>")
+        else:
+            lines.append(f"<p style='color:orange'>⚠️ No links found with today's slug '<b>{today_slug}</b>'. "
+                         "VSIN may not have published articles yet, or the date format differs.</p>")
+
+            # Show a sample of all links so we can see what slugs ARE present
+            lines.append("<p><b>Sample of all article-like links (first 20):</b></p><ul>")
+            article_links = [h for h in all_links if "vsin.com/" in h and len(h) > 40][:20]
+            for lnk in article_links:
+                lines.append(f"<li><code>{lnk}</code></li>")
+            lines.append("</ul>")
+
+    # ── Step 3: matched articles (from the real function) ───────────────────
+    lines.append("<hr><h3>Step 2: Matched articles</h3>")
+    articles = _get_article_links()
+    if not articles:
+        lines.append("<p style='color:orange'>⚠️ No articles matched the sport/author filters.</p>")
+    else:
+        lines.append(f"<p style='color:green'>✅ {len(articles)} article(s) matched</p><ul>")
+        for a in articles:
+            lines.append(f"<li><b>{a['author']}</b> / {a['sport']} — <code>{a['url']}</code></li>")
+        lines.append("</ul>")
+
+    # ── Step 4: fetch each article and show a text preview + picks ──────────
+    lines.append("<hr><h3>Step 3: Article content + picks</h3>")
+    for article in articles:
+        url    = article["url"]
+        sport  = article["sport"]
+        author = article["author"]
+        lines.append(f"<h4>{author} / {sport}</h4>")
+        lines.append(f"<p><code>{url}</code></p>")
+
+        art_html = _fetch_url(url)
+        if not art_html:
+            lines.append("<p style='color:red'>❌ Could not fetch article HTML.</p>")
+            continue
+
+        from bs4 import BeautifulSoup as BS
+        import re
+        soup2 = BS(art_html, "html.parser")
+        body = (
+            soup2.find("article") or
+            soup2.find(class_=re.compile(r"post-content|entry-content|article-body|td-post-content")) or
+            soup2.find("main")
+        )
+        text = (body or soup2).get_text(" ", strip=True)
+        lines.append(f"<p><b>Text length:</b> {len(text)} chars</p>")
+        # Show first 800 chars of article text
+        preview = text[:800].replace("<", "&lt;").replace(">", "&gt;")
+        lines.append(f"<pre style='background:#1a1a2e;color:#ccc;padding:10px;white-space:pre-wrap;font-size:0.8em'>{preview}...</pre>")
+
+        picks = _parse_article(art_html, sport, author)
+        if picks:
+            lines.append(f"<p style='color:green'>✅ <b>{len(picks)} pick(s) extracted:</b></p><ul>")
+            for p in picks:
+                lines.append(f"<li>{p['author']} → <b>{p['team']}</b> ({p['sport']}) "
+                              f"conviction={p['conviction']} fade={p['is_fade']} "
+                              f"| raw: <i>{p['raw'][:80]}</i></li>")
+            lines.append("</ul>")
+        else:
+            lines.append("<p style='color:orange'>⚠️ No picks extracted from this article.</p>")
+
+    html_out = f"""<!DOCTYPE html>
+<html><head><title>Expert Debug</title>
+<style>body{{background:#0d0d1a;color:#ddd;font-family:monospace;padding:20px}}
+h2,h3,h4{{color:#4fc3f7}} code{{background:#1a1a2e;padding:2px 6px;border-radius:3px}}
+hr{{border-color:#333}}</style></head>
+<body>{''.join(lines)}</body></html>"""
+    return html_out
+
+
 def run_web_server():
     """
     Start the Flask web server in a background thread.
