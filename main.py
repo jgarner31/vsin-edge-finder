@@ -39,6 +39,7 @@ from polymarket        import fetch_polymarket_for_splits
 from scorer            import score_all_games
 from discord_alert     import send_top_plays_summary, send_startup_message
 from web_app           import run_web_server, dashboard_state, manual_refresh_event
+import bet_tracker
 
 CENTRAL = ZoneInfo("America/Chicago")
 
@@ -249,6 +250,10 @@ def main():
     web_thread = threading.Thread(target=run_web_server, daemon=True)
     web_thread.start()
     print(f"   🌐 Web dashboard running on port {os.environ.get('PORT', 8080)}")
+
+    # Initialize the bet tracker database (creates table if needed)
+    bet_tracker.init_db()
+    print("   📊 Bet tracker ready.")
 
     send_startup_message()
 

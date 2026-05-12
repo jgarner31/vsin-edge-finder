@@ -17,9 +17,10 @@ import threading
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
-from flask import Flask, redirect, url_for
+from flask import Flask, redirect, url_for, request
 
 from config import ACTIVE_HOURS_START, ACTIVE_HOURS_END
+import bet_tracker
 
 app = Flask(__name__)
 CENTRAL = ZoneInfo("America/Chicago")
@@ -128,6 +129,10 @@ def _pick_card_html(game: dict, market_key: str) -> str:
         items = "".join(f'<li style="margin-bottom:3px;">{r}</li>' for r in pick["reasons"])
         reasons_html = f'<ul style="margin:8px 0 0 0;padding-left:18px;font-size:0.85em;color:#bbb;line-height:1.5;">{items}</ul>'
 
+    # Pre-fill values for the Log Bet form
+    raw_ml = game.get("_merged", {}).get(f"{pick.get('side')}_ml") if market_key in ("away_ml", "home_ml") else None
+    alert_odds_val = raw_ml if raw_ml is not None else ""
+
     return f"""
     <div style="background:#171717;border:1px solid {_border_color(label)};
                 border-radius:12px;padding:16px;margin-bottom:12px;">
@@ -147,6 +152,27 @@ def _pick_card_html(game: dict, market_key: str) -> str:
             </div>
         </div>
         {reasons_html}
+        <form method="post" action="/bets/log" style="margin-top:12px;display:flex;flex-wrap:wrap;gap:8px;align-items:center;">
+            <input type="hidden" name="sport"        value="{sport}">
+            <input type="hidden" name="game"         value="{game['game']}">
+            <input type="hidden" name="side"         value="{pick.get('side', '')}">
+            <input type="hidden" name="team"         value="{team}">
+            <input type="hidden" name="market"       value="{market_key}">
+            <input type="hidden" name="signal_score" value="{score}">
+            <input type="hidden" name="alert_odds"   value="{alert_odds_val}">
+            <input type="number" name="bet_odds"  placeholder="Odds (e.g. +158)"
+                   style="width:130px;background:#222;color:#e0e0e0;border:1px solid #444;
+                          border-radius:6px;padding:6px 10px;font-size:0.88em;">
+            <input type="number" name="units" value="1" min="0.1" max="10" step="0.5"
+                   style="width:80px;background:#222;color:#e0e0e0;border:1px solid #444;
+                          border-radius:6px;padding:6px 10px;font-size:0.88em;">
+            <span style="color:#777;font-size:0.82em;">units</span>
+            <button type="submit"
+                    style="background:#2d7d46;color:white;border:none;border-radius:6px;
+                           padding:6px 14px;font-size:0.85em;cursor:pointer;font-weight:bold;">
+                📝 Log Bet
+            </button>
+        </form>
     </div>"""
 
 
@@ -256,6 +282,87 @@ def _expert_picks_html(expert_by_sport: dict) -> str:
     return f'<div style="font-size:0.9em;">{"".join(rows)}</div>'
 
 
+def _bet_tracker_summary_html() -> str:
+    """Compact stats bar + pending bets for the main dashboard."""
+    try:
+        stats   = bet_tracker.get_stats()
+        pending = bet_tracker.get_pending_bets()
+    except Exception:
+        return '<p style="color:#888;font-size:0.85em;">Bet tracker initializing...</p>'
+
+    # ── Stats bar ─────────────────────────────────────────────────────────
+    pnl_color = "#32CD32" if stats["total_units"] >= 0 else "#FF6B6B"
+    clv_color = "#32CD32" if (stats.get("avg_clv") or 0) >= 0 else "#FF6B6B"
+
+    stats_html = f"""
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:14px;">
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 16px;min-width:100px;text-align:center;">
+            <div style="font-size:1.3em;font-weight:bold;">{stats['total_bets']}</div>
+            <div style="color:#777;font-size:0.78em;">Total Bets</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 16px;min-width:100px;text-align:center;">
+            <div style="font-size:1.3em;font-weight:bold;">{bet_tracker.fmt_pct(stats['win_rate'])}</div>
+            <div style="color:#777;font-size:0.78em;">Win Rate</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 16px;min-width:100px;text-align:center;">
+            <div style="font-size:1.3em;font-weight:bold;color:{pnl_color};">{bet_tracker.fmt_units(stats['total_units'])}</div>
+            <div style="color:#777;font-size:0.78em;">P&amp;L (units)</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 16px;min-width:100px;text-align:center;">
+            <div style="font-size:1.3em;font-weight:bold;">{bet_tracker.fmt_pct(stats['roi_pct'])}</div>
+            <div style="color:#777;font-size:0.78em;">ROI</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 16px;min-width:100px;text-align:center;">
+            <div style="font-size:1.3em;font-weight:bold;color:{clv_color};">{bet_tracker.fmt_clv(stats['avg_clv'])}</div>
+            <div style="color:#777;font-size:0.78em;">Avg CLV</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 16px;min-width:100px;text-align:center;">
+            <div style="font-size:1.3em;font-weight:bold;">{stats['pending']}</div>
+            <div style="color:#777;font-size:0.78em;">Pending</div>
+        </div>
+    </div>"""
+
+    if not pending:
+        pending_html = '<p style="color:#777;font-size:0.85em;">No pending bets. Log a bet from a pick card above.</p>'
+    else:
+        rows = []
+        for b in pending:
+            rows.append(f"""
+            <div style="background:#1a1a1a;border-radius:8px;padding:12px 14px;margin-bottom:8px;
+                        display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                <div>
+                    <div style="font-weight:bold;font-size:0.95em;">{b['game']}</div>
+                    <div style="color:#888;font-size:0.82em;margin-top:2px;">
+                        {b['sport']} · {b['market']} · {b['team']} ·
+                        {bet_tracker.fmt_odds(b['bet_odds'])} · {b['units']}u · Score {b['signal_score']}/10
+                    </div>
+                </div>
+                <form method="post" action="/bets/update"
+                      style="display:flex;flex-wrap:wrap;gap:6px;align-items:center;">
+                    <input type="hidden" name="bet_id" value="{b['id']}">
+                    <input type="number" name="closing_line" placeholder="Closing odds"
+                           style="width:130px;background:#222;color:#e0e0e0;border:1px solid #444;
+                                  border-radius:6px;padding:5px 8px;font-size:0.85em;">
+                    <select name="result"
+                            style="background:#222;color:#e0e0e0;border:1px solid #444;
+                                   border-radius:6px;padding:5px 8px;font-size:0.85em;">
+                        <option value="win">Win ✅</option>
+                        <option value="loss">Loss ❌</option>
+                        <option value="push">Push ➖</option>
+                        <option value="no_bet">No Bet 🚫</option>
+                    </select>
+                    <button type="submit"
+                            style="background:#1E90FF;color:white;border:none;border-radius:6px;
+                                   padding:5px 12px;font-size:0.85em;cursor:pointer;font-weight:bold;">
+                        Update
+                    </button>
+                </form>
+            </div>""")
+        pending_html = "".join(rows)
+
+    return stats_html + pending_html
+
+
 def _build_page() -> str:
     state = dashboard_state
     now   = datetime.now(CENTRAL).strftime("%Y-%m-%d %I:%M:%S %p CT")
@@ -297,7 +404,8 @@ def _build_page() -> str:
         {_splits_table_html(games_dict, sport)}
         """
 
-    expert_html = _expert_picks_html(expert_by_sport)
+    expert_html  = _expert_picks_html(expert_by_sport)
+    tracker_html = _bet_tracker_summary_html()
 
     active_end_label = f"{ACTIVE_HOURS_END % 12 or 12}PM"
     active_label = f"{ACTIVE_HOURS_START}AM – {active_end_label} CT"
@@ -361,6 +469,10 @@ def _build_page() -> str:
     <h2>🎯 Top Plays — BET &amp; LEAN signals</h2>
     {top_picks_html}
 
+    <!-- Bet Tracker Summary -->
+    <h2>📊 Bet Tracker &nbsp;<a href="/bets" style="font-size:0.8em;font-weight:normal;color:#87ceeb;">View full log →</a></h2>
+    {tracker_html}
+
     <!-- Expert Picks -->
     <h2>📰 VSIN Expert Picks (today's articles)</h2>
     <div style="background:#171717;border:1px solid #2a2a2a;border-radius:10px;padding:14px;">
@@ -419,6 +531,199 @@ def refresh():
     dashboard_state["refresh_message"] = "Manual refresh queued. Pulling latest VSIN splits now..."
     manual_refresh_event.set()
     return redirect(url_for("index"))
+
+
+@app.route("/bets/log", methods=["POST"])
+def bets_log():
+    """Log a new bet from a pick card form."""
+    f = request.form
+    try:
+        bet_odds = int(f.get("bet_odds") or f.get("alert_odds") or 0) or None
+    except (ValueError, TypeError):
+        bet_odds = None
+    try:
+        units = float(f.get("units") or 1.0)
+    except (ValueError, TypeError):
+        units = 1.0
+    try:
+        alert_odds = int(f.get("alert_odds") or 0) or None
+    except (ValueError, TypeError):
+        alert_odds = None
+
+    bet_tracker.log_bet(
+        sport        = f.get("sport", ""),
+        game         = f.get("game", ""),
+        side         = f.get("side", ""),
+        team         = f.get("team", ""),
+        market       = f.get("market", ""),
+        signal_score = int(f.get("signal_score") or 0),
+        alert_odds   = alert_odds,
+        bet_odds     = bet_odds,
+        units        = units,
+        notes        = f.get("notes", ""),
+    )
+    return redirect(url_for("index"))
+
+
+@app.route("/bets/update", methods=["POST"])
+def bets_update():
+    """Update a pending bet with result and optional closing line."""
+    f = request.form
+    try:
+        bet_id = int(f.get("bet_id", 0))
+    except (ValueError, TypeError):
+        return redirect(url_for("bets_log_page"))
+
+    result = f.get("result", "pending")
+    try:
+        closing_line = int(f.get("closing_line") or 0) or None
+    except (ValueError, TypeError):
+        closing_line = None
+
+    bet_tracker.update_result(bet_id, result, closing_line, f.get("notes"))
+    return redirect(url_for("bets_log_page"))
+
+
+@app.route("/bets/delete", methods=["POST"])
+def bets_delete():
+    """Delete a bet (logged by mistake)."""
+    try:
+        bet_id = int(request.form.get("bet_id", 0))
+        bet_tracker.delete_bet(bet_id)
+    except (ValueError, TypeError):
+        pass
+    return redirect(url_for("bets_log_page"))
+
+
+@app.route("/bets")
+def bets_log_page():
+    """Full bet log page with all historical bets."""
+    try:
+        bets  = bet_tracker.get_all_bets()
+        stats = bet_tracker.get_stats()
+    except Exception as e:
+        return f"<p style='color:red;font-family:monospace;padding:20px;'>Tracker error: {e}</p>"
+
+    pnl_color = "#32CD32" if stats["total_units"] >= 0 else "#FF6B6B"
+    clv_color = "#32CD32" if (stats.get("avg_clv") or 0) >= 0 else "#FF6B6B"
+    now = datetime.now(CENTRAL).strftime("%Y-%m-%d %I:%M %p CT")
+
+    result_colors = {
+        "win": "#32CD32", "loss": "#FF6B6B", "push": "#aaa",
+        "no_bet": "#666", "pending": "#FFD700",
+    }
+    result_labels = {
+        "win": "Win ✅", "loss": "Loss ❌", "push": "Push ➖",
+        "no_bet": "No Bet 🚫", "pending": "Pending ⏳",
+    }
+
+    rows = ""
+    for b in bets:
+        rc = result_colors.get(b["result"], "#aaa")
+        rl = result_labels.get(b["result"], b["result"])
+        logged = b["logged_at"][:16].replace("T", " ") if b["logged_at"] else "—"
+        rows += f"""
+        <tr style="border-bottom:1px solid #1e1e1e;">
+            <td style="padding:8px 12px;color:#777;font-size:0.82em;">{logged}</td>
+            <td style="padding:8px 12px;">{b['sport']}</td>
+            <td style="padding:8px 12px;font-weight:bold;">{b['game']}</td>
+            <td style="padding:8px 12px;">{b['team']} ({b['side']})</td>
+            <td style="padding:8px 12px;">{b['market']}</td>
+            <td style="padding:8px 12px;">{bet_tracker.fmt_odds(b['bet_odds'])}</td>
+            <td style="padding:8px 12px;">{b['units']}u</td>
+            <td style="padding:8px 12px;font-weight:bold;color:{rc};">{rl}</td>
+            <td style="padding:8px 12px;">{bet_tracker.fmt_odds(b['closing_line'])}</td>
+            <td style="padding:8px 12px;color:{clv_color};">{bet_tracker.fmt_clv(b['clv_cents'])}</td>
+            <td style="padding:8px 12px;color:{pnl_color};">{bet_tracker.fmt_units(b['pnl_units'])}</td>
+            <td style="padding:8px 12px;">{b['signal_score']}/10</td>
+            <td style="padding:8px 12px;">
+                <form method="post" action="/bets/delete" style="margin:0;">
+                    <input type="hidden" name="bet_id" value="{b['id']}">
+                    <button type="submit"
+                            style="background:none;color:#555;border:1px solid #333;
+                                   border-radius:4px;padding:2px 8px;cursor:pointer;font-size:0.8em;"
+                            onclick="return confirm('Delete this bet?')">✕</button>
+                </form>
+            </td>
+        </tr>"""
+
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>📊 Bet Log — VSIN Edge Finder</title>
+    <style>
+        body {{ margin:0;padding:0;background:#121212;color:#e0e0e0;
+               font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif; }}
+        h1   {{ margin:0;font-size:1.3em; }}
+        th   {{ background:#1a1a1a;color:#777;text-align:left;padding:8px 12px;
+               font-size:0.8em;text-transform:uppercase;letter-spacing:0.5px; }}
+        tr:hover {{ background:#1a1a1a; }}
+    </style>
+</head>
+<body>
+<div style="max-width:1100px;margin:0 auto;padding:20px;">
+
+    <div style="display:flex;justify-content:space-between;align-items:center;
+                flex-wrap:wrap;gap:10px;margin-bottom:20px;">
+        <h1>📊 Bet Log</h1>
+        <div style="display:flex;gap:12px;align-items:center;">
+            <a href="/" style="color:#87ceeb;font-size:0.9em;">← Dashboard</a>
+            <span style="color:#555;font-size:0.82em;">{now}</span>
+        </div>
+    </div>
+
+    <!-- Stats bar -->
+    <div style="display:flex;flex-wrap:wrap;gap:10px;margin-bottom:24px;">
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 18px;text-align:center;">
+            <div style="font-size:1.4em;font-weight:bold;">{stats['wins']}-{stats['losses']}-{stats['pushes']}</div>
+            <div style="color:#777;font-size:0.78em;">W-L-P</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 18px;text-align:center;">
+            <div style="font-size:1.4em;font-weight:bold;">{bet_tracker.fmt_pct(stats['win_rate'])}</div>
+            <div style="color:#777;font-size:0.78em;">Win Rate</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 18px;text-align:center;">
+            <div style="font-size:1.4em;font-weight:bold;color:{pnl_color};">{bet_tracker.fmt_units(stats['total_units'])}</div>
+            <div style="color:#777;font-size:0.78em;">Net P&amp;L</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 18px;text-align:center;">
+            <div style="font-size:1.4em;font-weight:bold;">{bet_tracker.fmt_pct(stats['roi_pct'])}</div>
+            <div style="color:#777;font-size:0.78em;">ROI</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 18px;text-align:center;">
+            <div style="font-size:1.4em;font-weight:bold;color:{clv_color};">{bet_tracker.fmt_clv(stats['avg_clv'])}</div>
+            <div style="color:#777;font-size:0.78em;">Avg CLV</div>
+        </div>
+        <div style="background:#1a1a1a;border-radius:8px;padding:10px 18px;text-align:center;">
+            <div style="font-size:1.4em;font-weight:bold;">
+                <span style="color:#32CD32;">{stats['clv_positive']}</span> /
+                <span style="color:#FF6B6B;">{stats['clv_negative']}</span>
+            </div>
+            <div style="color:#777;font-size:0.78em;">CLV +/-</div>
+        </div>
+    </div>
+
+    <!-- Bet table -->
+    <div style="overflow-x:auto;">
+    <table style="width:100%;border-collapse:collapse;font-size:0.88em;">
+        <thead>
+            <tr>
+                <th>Date</th><th>Sport</th><th>Game</th><th>Pick</th>
+                <th>Market</th><th>Odds</th><th>Units</th><th>Result</th>
+                <th>Close</th><th>CLV</th><th>P&amp;L</th><th>Score</th><th></th>
+            </tr>
+        </thead>
+        <tbody>
+            {rows if rows else '<tr><td colspan="13" style="padding:20px;color:#666;text-align:center;">No bets logged yet. Use the Log Bet button on any pick card.</td></tr>'}
+        </tbody>
+    </table>
+    </div>
+
+</div>
+</body>
+</html>"""
 
 
 def run_web_server():
